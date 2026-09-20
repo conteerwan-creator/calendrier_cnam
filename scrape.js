@@ -95,18 +95,30 @@ function buildStableUid(ev) {
   await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
   console.log('URL après premier chargement :', page.url());
 
-  // La page peut mettre un peu de temps à afficher soit le formulaire de connexion,
-  // soit directement le calendrier (rendu côté client). On attend l'un des deux.
+  // Trois états possibles à ce stade : le calendrier directement, le formulaire
+  // identifiant/mot de passe directement, ou une page intermédiaire "Se connecter"
+  // qui propose SSO Cnam vs identifiants classiques.
   try {
-    await page.waitForSelector('#identifiant, td.fc-daygrid-day', { timeout: 30000 });
+    await page.waitForSelector(
+      '#identifiant, td.fc-daygrid-day, text=SE CONNECTER AVEC VOS IDENTIFIANTS',
+      { timeout: 30000 }
+    );
   } catch (err) {
-    console.log('Ni formulaire de connexion ni calendrier détectés. Capture de débogage...');
+    console.log('Aucun état reconnu. Capture de débogage...');
     fs.mkdirSync('debug', { recursive: true });
     await page.screenshot({ path: 'debug/failure.png', fullPage: true }).catch(() => {});
     const html = await page.content().catch(() => '');
     fs.writeFileSync('debug/failure.html', html);
     console.log('URL finale :', page.url());
     throw err;
+  }
+
+  // Si on est sur la page de choix, on clique sur "connexion avec identifiants".
+  const credentialsButton = await page.$('text=SE CONNECTER AVEC VOS IDENTIFIANTS');
+  if (credentialsButton) {
+    console.log('Page de choix détectée, clic sur "Se connecter avec vos identifiants"...');
+    await credentialsButton.click();
+    await page.waitForSelector('#identifiant', { timeout: 15000 });
   }
 
   const isLoginPage = await page.$('#identifiant');
