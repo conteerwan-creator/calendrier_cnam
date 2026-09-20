@@ -1,0 +1,44 @@
+name: Update Cnam calendar
+
+on:
+  schedule:
+    # 3 fois par jour (heures UTC) : ~7h, ~13h, ~19h heure de Paris (hiver)
+    - cron: '0 6,12,18 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run scraper
+        env:
+          CNAM_USERNAME: ${{ secrets.CNAM_USERNAME }}
+          CNAM_PASSWORD: ${{ secrets.CNAM_PASSWORD }}
+          CALENDAR_URL: ${{ secrets.CALENDAR_URL }}
+        run: node scrape.js
+
+      - name: Commit updated calendar.ics
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/calendar.ics
+          git diff --quiet --cached || git commit -m "Mise à jour automatique de l'emploi du temps"
+          git push
