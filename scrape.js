@@ -111,89 +111,69 @@ async function waitForAnyState(page, timeout) {
   const browser = await chromium.launch();
   const page = await browser.newPage();
 
-  console.log('Navigation vers le calendrier...');
-  await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
-  console.log('URL après premier chargement :', page.url());
+  console.log('Connexion via lecnam.net...');
+  await page.goto('https://www.lecnam.net', { waitUntil: 'domcontentloaded' });
+  console.log('URL lecnam.net :', page.url());
 
-  // Trois états possibles à ce stade : le calendrier directement, le formulaire
-  // identifiant/mot de passe directement, ou une page intermédiaire "Se connecter"
-  // qui propose SSO Cnam vs identifiants classiques.
-  let state;
+  const connectLink = page.getByText('Se connecter', { exact: false }).first();
   try {
-    state = await waitForAnyState(page, 30000);
-    console.log('État détecté :', state);
+    await connectLink.waitFor({ timeout: 20000 });
   } catch (err) {
-    console.log('Aucun état reconnu. Capture de débogage...');
+    console.log('Lien "Se connecter" introuvable sur lecnam.net. Capture de débogage...');
     fs.mkdirSync('debug', { recursive: true });
     await page.screenshot({ path: 'debug/failure.png', fullPage: true }).catch(() => {});
-    const html = await page.content().catch(() => '');
-    fs.writeFileSync('debug/failure.html', html);
+    fs.writeFileSync('debug/failure.html', await page.content().catch(() => ''));
+    throw err;
+  }
+  await connectLink.click();
+
+  try {
+    await page.waitForSelector('#identifiant', { timeout: 20000 });
+  } catch (err) {
+    console.log('Formulaire identifiant/mot de passe introuvable. Capture de débogage...');
+    fs.mkdirSync('debug', { recursive: true });
+    await page.screenshot({ path: 'debug/failure.png', fullPage: true }).catch(() => {});
+    fs.writeFileSync('debug/failure.html', await page.content().catch(() => ''));
     console.log('URL finale :', page.url());
     throw err;
   }
 
-  // Si on est sur la page de choix, on utilise le vrai SSO Cnam, qui s'ouvre
-  // dans une popup séparée.
-  if (state === 'choice') {
-    console.log('Page de choix détectée, clic sur "SE CONNECTER AVEC CNAM"...');
-    const popupPromise = page.waitForEvent('popup');
-    await page.getByText('SE CONNECTER AVEC CNAM', { exact: false }).first().click();
-    const popup = await popupPromise;
-    await popup.waitForLoadState('domcontentloaded');
-    console.log('Popup ouverte, URL :', popup.url());
+  console.log('Connexion en cours...');
+  await page.fill('#identifiant', USERNAME);
+  await page.fill('#mdp', PASSWORD);
+  await Promise.all([
+    page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => {}),
+    page.click('button.btn.btn-primary-color[type="submit"]'),
+  ]);
+  console.log('Connecté sur lecnam.net, URL :', page.url());
 
-    try {
-      await popup.waitForSelector('#identifiant', { timeout: 20000 });
-    } catch (err) {
-      console.log('Formulaire SSO introuvable dans la popup. Capture de débogage...');
-      fs.mkdirSync('debug', { recursive: true });
-      await popup.screenshot({ path: 'debug/failure.png', fullPage: true }).catch(() => {});
-      const html = await popup.content().catch(() => '');
-      fs.writeFileSync('debug/failure.html', html);
-      throw err;
+  console.log('Navigation vers le calendrier PEC...');
+  await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
+  console.log('URL après navigation vers le calendrier :', page.url());
+
+  // Au cas (rare, défensif) où un écran de sélection de session apparaîtrait quand même.
+  const sessionModalVisible = await page
+    .getByText('Sélectionner une session', { exact: false })
+    .first()
+    .isVisible()
+    .catch(() => false);
+
+  if (sessionModalVisible) {
+    console.log('Écran de sélection de session détecté...');
+    const programLocator = page.getByText(SESSION_PROGRAM, { exact: false }).first();
+    const alreadyVisible = await programLocator.isVisible().catch(() => false);
+
+    if (!alreadyVisible) {
+      console.log("Programme non visible directement, dépliage de l'arborescence...");
+      await page.getByText('CNAM Pays de la Loire', { exact: false }).first().click();
+      await page.waitForTimeout(500);
+      await page.getByText(SESSION_YEAR, { exact: false }).first().click();
+      await page.waitForTimeout(500);
     }
 
-    console.log('Connexion SSO en cours...');
-    await popup.fill('#identifiant', USERNAME);
-    await popup.fill('#mdp', PASSWORD);
-    await popup.click('button.btn.btn-primary-color[type="submit"]');
-
-    // La popup se ferme normalement une fois la connexion SSO validée.
-    await popup.waitForEvent('close', { timeout: 30000 }).catch(() => {
-      console.log("La popup ne s'est pas fermée automatiquement (pas forcément grave).");
-    });
-
-    console.log('Retour sur la page principale, URL :', page.url());
-
-    // Après le SSO, une étape de sélection de session est généralement nécessaire.
-    const sessionModalVisible = await page
-      .getByText('Sélectionner une session', { exact: false })
-      .first()
-      .isVisible()
-      .catch(() => false);
-
-    if (sessionModalVisible) {
-      console.log('Écran de sélection de session détecté...');
-      const programLocator = page.getByText(SESSION_PROGRAM, { exact: false }).first();
-      const alreadyVisible = await programLocator.isVisible().catch(() => false);
-
-      if (!alreadyVisible) {
-        console.log("Programme non visible directement, dépliage de l'arborescence...");
-        await page.getByText('CNAM Pays de la Loire', { exact: false }).first().click();
-        await page.waitForTimeout(500);
-        await page.getByText(SESSION_YEAR, { exact: false }).first().click();
-        await page.waitForTimeout(500);
-      }
-
-      console.log(`Sélection du programme "${SESSION_PROGRAM}"...`);
-      await page.getByText(SESSION_PROGRAM, { exact: false }).first().click();
-      await page.waitForTimeout(1500);
-    } else {
-      console.log('Pas d\'écran de sélection de session (déjà sur la bonne session).');
-    }
-
-    // On (re)navigue explicitement vers l'URL du calendrier pour être sûr d'y être.
-    console.log('Navigation finale vers le calendrier...');
+    console.log(`Sélection du programme "${SESSION_PROGRAM}"...`);
+    await page.getByText(SESSION_PROGRAM, { exact: false }).first().click();
+    await page.waitForTimeout(1500);
     await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
   }
 
