@@ -34,6 +34,14 @@ jobs:
           CALENDAR_URL: ${{ secrets.CALENDAR_URL }}
         run: node scrape.js
 
+      - name: Upload debug screenshot (if failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug
+          path: debug/
+          if-no-files-found: ignore
+
       - name: Commit updated calendar.ics
         run: |
           git config user.name "github-actions[bot]"
