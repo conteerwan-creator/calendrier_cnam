@@ -87,6 +87,22 @@ function buildStableUid(ev) {
   return crypto.createHash('md5').update(raw).digest('hex') + '@cnam-calendar-sync';
 }
 
+// Attend le premier des 3 états possibles après navigation vers le calendrier :
+// le formulaire identifiant/mot de passe, le calendrier directement, ou la page
+// intermédiaire de choix de méthode de connexion.
+async function waitForAnyState(page, timeout) {
+  const attempts = [
+    page.waitForSelector('#identifiant', { timeout }).then(() => 'login'),
+    page.waitForSelector('td.fc-daygrid-day', { timeout }).then(() => 'calendar'),
+    page
+      .getByText('SE CONNECTER AVEC VOS IDENTIFIANTS', { exact: false })
+      .first()
+      .waitFor({ timeout })
+      .then(() => 'choice'),
+  ];
+  return Promise.any(attempts);
+}
+
 (async () => {
   const browser = await chromium.launch();
   const page = await browser.newPage();
@@ -95,14 +111,10 @@ function buildStableUid(ev) {
   await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
   console.log('URL après premier chargement :', page.url());
 
-  // Trois états possibles à ce stade : le calendrier directement, le formulaire
-  // identifiant/mot de passe directement, ou une page intermédiaire "Se connecter"
-  // qui propose SSO Cnam vs identifiants classiques.
+  let state;
   try {
-    await page.waitForSelector(
-      '#identifiant, td.fc-daygrid-day, text=SE CONNECTER AVEC VOS IDENTIFIANTS',
-      { timeout: 30000 }
-    );
+    state = await waitForAnyState(page, 30000);
+    console.log('État détecté :', state);
   } catch (err) {
     console.log('Aucun état reconnu. Capture de débogage...');
     fs.mkdirSync('debug', { recursive: true });
@@ -114,10 +126,9 @@ function buildStableUid(ev) {
   }
 
   // Si on est sur la page de choix, on clique sur "connexion avec identifiants".
-  const credentialsButton = await page.$('text=SE CONNECTER AVEC VOS IDENTIFIANTS');
-  if (credentialsButton) {
+  if (state === 'choice') {
     console.log('Page de choix détectée, clic sur "Se connecter avec vos identifiants"...');
-    await credentialsButton.click();
+    await page.getByText('SE CONNECTER AVEC VOS IDENTIFIANTS', { exact: false }).first().click();
     await page.waitForSelector('#identifiant', { timeout: 15000 });
   }
 
@@ -134,8 +145,6 @@ function buildStableUid(ev) {
     console.log('URL après tentative de connexion :', page.url());
   }
 
-  // On attend que le calendrier soit bien chargé (peut nécessiter une redirection
-  // supplémentaire vers la page calendrier après connexion).
   try {
     await page.waitForSelector('td.fc-daygrid-day', { timeout: 20000 });
   } catch {
