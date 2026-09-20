@@ -70,12 +70,10 @@ async function goToAdjacentMonth(page, direction) {
     firstCellBefore,
     { timeout: 15000 }
   );
-  // petite marge pour laisser le temps au rendu de se stabiliser
   await page.waitForTimeout(300);
 }
 
 function parseHourLabel(label) {
-  // "09 h" -> 9 ; "09h30" -> 9.5 ; null -> null
   if (!label) return null;
   const match = label.match(/(\d{1,2})\s*h\s*(\d{2})?/i);
   if (!match) return null;
@@ -97,9 +95,21 @@ function buildStableUid(ev) {
   await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
   console.log('URL après premier chargement :', page.url());
 
-  // Si un formulaire de connexion est présent, on se connecte.
-  const loginFieldSelector = '#identifiant';
-  const isLoginPage = await page.$(loginFieldSelector);
+  // La page peut mettre un peu de temps à afficher soit le formulaire de connexion,
+  // soit directement le calendrier (rendu côté client). On attend l'un des deux.
+  try {
+    await page.waitForSelector('#identifiant, td.fc-daygrid-day', { timeout: 30000 });
+  } catch (err) {
+    console.log('Ni formulaire de connexion ni calendrier détectés. Capture de débogage...');
+    fs.mkdirSync('debug', { recursive: true });
+    await page.screenshot({ path: 'debug/failure.png', fullPage: true }).catch(() => {});
+    const html = await page.content().catch(() => '');
+    fs.writeFileSync('debug/failure.html', html);
+    console.log('URL finale :', page.url());
+    throw err;
+  }
+
+  const isLoginPage = await page.$('#identifiant');
   console.log('Formulaire de connexion détecté ?', !!isLoginPage);
   if (isLoginPage) {
     console.log('Connexion en cours...');
@@ -115,13 +125,13 @@ function buildStableUid(ev) {
   // On attend que le calendrier soit bien chargé (peut nécessiter une redirection
   // supplémentaire vers la page calendrier après connexion).
   try {
-    await page.waitForSelector('td.fc-daygrid-day', { timeout: 15000 });
+    await page.waitForSelector('td.fc-daygrid-day', { timeout: 20000 });
   } catch {
     console.log('Calendrier non trouvé, nouvelle tentative de navigation directe...');
     await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
     console.log('URL après seconde tentative :', page.url());
     try {
-      await page.waitForSelector('td.fc-daygrid-day', { timeout: 15000 });
+      await page.waitForSelector('td.fc-daygrid-day', { timeout: 20000 });
     } catch (err) {
       console.log('Échec définitif. Capture de débogage en cours...');
       fs.mkdirSync('debug', { recursive: true });
@@ -155,7 +165,6 @@ function buildStableUid(ev) {
 
   const cal = ical({ name: 'Emploi du temps Cnam' });
 
-  // Déduplique (le même événement peut apparaître si un mois est vu deux fois)
   const seen = new Set();
 
   for (const ev of allEvents) {
@@ -167,7 +176,6 @@ function buildStableUid(ev) {
     const hourDecimal = parseHourLabel(ev.time);
 
     if (hourDecimal === null) {
-      // Événement sans heure précise (ex: "Indisponible", "Entreprise") -> journée entière
       cal.createEvent({
         id: uid,
         start: ev.date,
