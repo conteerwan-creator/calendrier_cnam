@@ -95,27 +95,43 @@ function buildStableUid(ev) {
 
   console.log('Navigation vers le calendrier...');
   await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
+  console.log('URL après premier chargement :', page.url());
 
   // Si un formulaire de connexion est présent, on se connecte.
   const loginFieldSelector = '#identifiant';
   const isLoginPage = await page.$(loginFieldSelector);
+  console.log('Formulaire de connexion détecté ?', !!isLoginPage);
   if (isLoginPage) {
-    console.log('Formulaire de connexion détecté, connexion en cours...');
+    console.log('Connexion en cours...');
     await page.fill('#identifiant', USERNAME);
     await page.fill('#mdp', PASSWORD);
     await Promise.all([
       page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => {}),
       page.click('button.btn.btn-primary-color[type="submit"]'),
     ]);
+    console.log('URL après tentative de connexion :', page.url());
   }
 
   // On attend que le calendrier soit bien chargé (peut nécessiter une redirection
   // supplémentaire vers la page calendrier après connexion).
-  await page.waitForSelector('td.fc-daygrid-day', { timeout: 30000 }).catch(async () => {
-    // Si on n'est pas retombé sur le calendrier, on y retourne explicitement.
+  try {
+    await page.waitForSelector('td.fc-daygrid-day', { timeout: 15000 });
+  } catch {
+    console.log('Calendrier non trouvé, nouvelle tentative de navigation directe...');
     await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
-    await page.waitForSelector('td.fc-daygrid-day', { timeout: 30000 });
-  });
+    console.log('URL après seconde tentative :', page.url());
+    try {
+      await page.waitForSelector('td.fc-daygrid-day', { timeout: 15000 });
+    } catch (err) {
+      console.log('Échec définitif. Capture de débogage en cours...');
+      fs.mkdirSync('debug', { recursive: true });
+      await page.screenshot({ path: 'debug/failure.png', fullPage: true }).catch(() => {});
+      const html = await page.content().catch(() => '');
+      fs.writeFileSync('debug/failure.html', html);
+      console.log('URL finale :', page.url());
+      throw err;
+    }
+  }
 
   console.log('Connecté. Recul de %d mois...', MONTHS_BACKWARD);
   for (let i = 0; i < MONTHS_BACKWARD; i++) {
