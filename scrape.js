@@ -129,4 +129,108 @@ async function waitForAnyState(page, timeout) {
     } catch (err) {
       console.log('Formulaire toujours introuvable après le clic. Capture de débogage...');
       fs.mkdirSync('debug', { recursive: true });
-      await page.screenshot({ path: 'debug/failure.png',
+      await page.screenshot({ path: 'debug/failure.png', fullPage: true }).catch(() => {});
+      const html = await page.content().catch(() => '');
+      fs.writeFileSync('debug/failure.html', html);
+      console.log('URL finale :', page.url());
+      throw err;
+    }
+  }
+
+  const isLoginPage = await page.$('#identifiant');
+  console.log('Formulaire de connexion détecté ?', !!isLoginPage);
+  if (isLoginPage) {
+    console.log('Connexion en cours...');
+    await page.fill('#identifiant', USERNAME);
+    await page.fill('#mdp', PASSWORD);
+    await Promise.all([
+      page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => {}),
+      page.click('button.btn.btn-primary-color[type="submit"]'),
+    ]);
+    console.log('URL après tentative de connexion :', page.url());
+  }
+
+  try {
+    await page.waitForSelector('td.fc-daygrid-day', { timeout: 20000 });
+  } catch {
+    console.log('Calendrier non trouvé, nouvelle tentative de navigation directe...');
+    await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
+    console.log('URL après seconde tentative :', page.url());
+    try {
+      await page.waitForSelector('td.fc-daygrid-day', { timeout: 20000 });
+    } catch (err) {
+      console.log('Échec définitif. Capture de débogage en cours...');
+      fs.mkdirSync('debug', { recursive: true });
+      await page.screenshot({ path: 'debug/failure.png', fullPage: true }).catch(() => {});
+      const html = await page.content().catch(() => '');
+      fs.writeFileSync('debug/failure.html', html);
+      console.log('URL finale :', page.url());
+      throw err;
+    }
+  }
+
+  console.log('Connecté. Recul de %d mois...', MONTHS_BACKWARD);
+  for (let i = 0; i < MONTHS_BACKWARD; i++) {
+    await goToAdjacentMonth(page, 'prev');
+  }
+
+  const allEvents = [];
+  const totalMonths = MONTHS_BACKWARD + MONTHS_FORWARD + 1;
+
+  for (let m = 0; m < totalMonths; m++) {
+    console.log(`Extraction du mois ${m + 1}/${totalMonths}...`);
+    allEvents.push(...(await extractMonthEvents(page)));
+    if (m < totalMonths - 1) {
+      await goToAdjacentMonth(page, 'next');
+    }
+  }
+
+  await browser.close();
+
+  console.log(`${allEvents.length} événements bruts extraits. Génération du fichier .ics...`);
+
+  const cal = ical({ name: 'Emploi du temps Cnam' });
+
+  const seen = new Set();
+
+  for (const ev of allEvents) {
+    if (!ev.date || !ev.title) continue;
+    const uid = buildStableUid(ev);
+    if (seen.has(uid)) continue;
+    seen.add(uid);
+
+    const hourDecimal = parseHourLabel(ev.time);
+
+    if (hourDecimal === null) {
+      cal.createEvent({
+        id: uid,
+        start: ev.date,
+        allDay: true,
+        summary: ev.title,
+        description: ev.teacher || undefined,
+      });
+    } else {
+      const [year, month, day] = ev.date.split('-').map((n) => parseInt(n, 10));
+      const startHour = Math.floor(hourDecimal);
+      const startMinute = Math.round((hourDecimal - startHour) * 60);
+      const start = new Date(year, month - 1, day, startHour, startMinute);
+      const end = new Date(start.getTime() + DEFAULT_DURATION_HOURS * 60 * 60 * 1000);
+
+      cal.createEvent({
+        id: uid,
+        start,
+        end,
+        summary: ev.title,
+        description: ev.teacher || undefined,
+      });
+    }
+  }
+
+  fs.mkdirSync('docs', { recursive: true });
+  fs.writeFileSync('docs/calendar.ics', cal.toString());
+
+  console.log(`Fichier docs/calendar.ics généré avec ${seen.size} événements uniques.`);
+})().catch((err) => {
+  console.error('Erreur pendant le scraping :', err);
+  process.exit(1);
+});
