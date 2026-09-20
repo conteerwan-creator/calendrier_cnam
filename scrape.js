@@ -29,12 +29,11 @@ if (!USERNAME || !PASSWORD || !CALENDAR_URL) {
   process.exit(1);
 }
 
-// Extrait tous les événements visibles dans la vue "mois" actuellement affichée.
 async function extractMonthEvents(page) {
   return page.$$eval('td.fc-daygrid-day', (cells) => {
     const results = [];
     cells.forEach((cell) => {
-      const date = cell.getAttribute('data-date'); // ex: "2026-08-31"
+      const date = cell.getAttribute('data-date');
       const eventLinks = cell.querySelectorAll('a.fc-event');
       eventLinks.forEach((a) => {
         const timeEl = a.querySelector('.fc-event-time');
@@ -47,7 +46,7 @@ async function extractMonthEvents(page) {
         }
         results.push({
           date,
-          time: timeEl ? timeEl.textContent.trim() : null, // ex: "09 h"
+          time: timeEl ? timeEl.textContent.trim() : null,
           title: titleEl ? titleEl.textContent.trim() : (a.textContent || '').trim(),
           teacher,
         });
@@ -57,7 +56,6 @@ async function extractMonthEvents(page) {
   });
 }
 
-// Clique sur "suivant" ou "précédent" et attend que le calendrier ait bien changé de mois.
 async function goToAdjacentMonth(page, direction) {
   const firstCellBefore = await page.$eval('td.fc-daygrid-day', (el) => el.getAttribute('data-date'));
   const selector = direction === 'next' ? 'button.fc-next-button' : 'button.fc-prev-button';
@@ -87,9 +85,6 @@ function buildStableUid(ev) {
   return crypto.createHash('md5').update(raw).digest('hex') + '@cnam-calendar-sync';
 }
 
-// Attend le premier des 3 états possibles après navigation vers le calendrier :
-// le formulaire identifiant/mot de passe, le calendrier directement, ou la page
-// intermédiaire de choix de méthode de connexion.
 async function waitForAnyState(page, timeout) {
   const attempts = [
     page.waitForSelector('#identifiant', { timeout }).then(() => 'login'),
@@ -125,107 +120,13 @@ async function waitForAnyState(page, timeout) {
     throw err;
   }
 
-  // Si on est sur la page de choix, on clique sur "connexion avec identifiants".
   if (state === 'choice') {
     console.log('Page de choix détectée, clic sur "Se connecter avec vos identifiants"...');
     await page.getByText('SE CONNECTER AVEC VOS IDENTIFIANTS', { exact: false }).first().click();
-    await page.waitForSelector('#identifiant', { timeout: 15000 });
-  }
-
-  const isLoginPage = await page.$('#identifiant');
-  console.log('Formulaire de connexion détecté ?', !!isLoginPage);
-  if (isLoginPage) {
-    console.log('Connexion en cours...');
-    await page.fill('#identifiant', USERNAME);
-    await page.fill('#mdp', PASSWORD);
-    await Promise.all([
-      page.waitForNavigation({ waitUntil: 'domcontentloaded' }).catch(() => {}),
-      page.click('button.btn.btn-primary-color[type="submit"]'),
-    ]);
-    console.log('URL après tentative de connexion :', page.url());
-  }
-
-  try {
-    await page.waitForSelector('td.fc-daygrid-day', { timeout: 20000 });
-  } catch {
-    console.log('Calendrier non trouvé, nouvelle tentative de navigation directe...');
-    await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
-    console.log('URL après seconde tentative :', page.url());
+    console.log('URL juste après le clic :', page.url());
     try {
-      await page.waitForSelector('td.fc-daygrid-day', { timeout: 20000 });
+      await page.waitForSelector('#identifiant', { timeout: 20000 });
     } catch (err) {
-      console.log('Échec définitif. Capture de débogage en cours...');
+      console.log('Formulaire toujours introuvable après le clic. Capture de débogage...');
       fs.mkdirSync('debug', { recursive: true });
-      await page.screenshot({ path: 'debug/failure.png', fullPage: true }).catch(() => {});
-      const html = await page.content().catch(() => '');
-      fs.writeFileSync('debug/failure.html', html);
-      console.log('URL finale :', page.url());
-      throw err;
-    }
-  }
-
-  console.log('Connecté. Recul de %d mois...', MONTHS_BACKWARD);
-  for (let i = 0; i < MONTHS_BACKWARD; i++) {
-    await goToAdjacentMonth(page, 'prev');
-  }
-
-  const allEvents = [];
-  const totalMonths = MONTHS_BACKWARD + MONTHS_FORWARD + 1;
-
-  for (let m = 0; m < totalMonths; m++) {
-    console.log(`Extraction du mois ${m + 1}/${totalMonths}...`);
-    allEvents.push(...(await extractMonthEvents(page)));
-    if (m < totalMonths - 1) {
-      await goToAdjacentMonth(page, 'next');
-    }
-  }
-
-  await browser.close();
-
-  console.log(`${allEvents.length} événements bruts extraits. Génération du fichier .ics...`);
-
-  const cal = ical({ name: 'Emploi du temps Cnam' });
-
-  const seen = new Set();
-
-  for (const ev of allEvents) {
-    if (!ev.date || !ev.title) continue;
-    const uid = buildStableUid(ev);
-    if (seen.has(uid)) continue;
-    seen.add(uid);
-
-    const hourDecimal = parseHourLabel(ev.time);
-
-    if (hourDecimal === null) {
-      cal.createEvent({
-        id: uid,
-        start: ev.date,
-        allDay: true,
-        summary: ev.title,
-        description: ev.teacher || undefined,
-      });
-    } else {
-      const [year, month, day] = ev.date.split('-').map((n) => parseInt(n, 10));
-      const startHour = Math.floor(hourDecimal);
-      const startMinute = Math.round((hourDecimal - startHour) * 60);
-      const start = new Date(year, month - 1, day, startHour, startMinute);
-      const end = new Date(start.getTime() + DEFAULT_DURATION_HOURS * 60 * 60 * 1000);
-
-      cal.createEvent({
-        id: uid,
-        start,
-        end,
-        summary: ev.title,
-        description: ev.teacher || undefined,
-      });
-    }
-  }
-
-  fs.mkdirSync('docs', { recursive: true });
-  fs.writeFileSync('docs/calendar.ics', cal.toString());
-
-  console.log(`Fichier docs/calendar.ics généré avec ${seen.size} événements uniques.`);
-})().catch((err) => {
-  console.error('Erreur pendant le scraping :', err);
-  process.exit(1);
-});
+      await page.screenshot({ path: 'debug/failure.png',
