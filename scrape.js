@@ -156,6 +156,52 @@ async function waitForAnyState(page, timeout) {
   await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
   console.log('URL après navigation vers le calendrier :', page.url());
 
+  // Si on retombe sur l'écran de choix (le PEC ne sait pas encore qu'on est
+  // déjà connecté sur lecnam.net), on déclenche le SSO depuis le PEC lui-même.
+  // Comme une session lecnam.net valide existe déjà, ça devrait passer sans
+  // redemander les identifiants (vrai SSO, popup qui se referme toute seule).
+  const choiceVisible = await page
+    .getByText('SE CONNECTER AVEC CNAM', { exact: false })
+    .first()
+    .isVisible()
+    .catch(() => false);
+
+  if (choiceVisible) {
+    console.log('Écran de choix détecté sur le PEC, clic sur "SE CONNECTER AVEC CNAM"...');
+    const popupPromise = page.waitForEvent('popup');
+    await page.getByText('SE CONNECTER AVEC CNAM', { exact: false }).first().click();
+    const popup = await popupPromise;
+    await popup.waitForLoadState('domcontentloaded').catch(() => {});
+    console.log('Popup ouverte, URL :', popup.url());
+
+    // Si la session lecnam.net est bien reconnue, la popup se referme d'elle-même
+    // sans repasser par le formulaire. Sinon (rare), on remplit par sécurité.
+    const needsCredentials = await popup
+      .waitForSelector('#identifiant', { timeout: 8000 })
+      .then(() => true)
+      .catch(() => false);
+
+    if (needsCredentials) {
+      console.log('Formulaire encore demandé dans la popup, remplissage par sécurité...');
+      await popup.fill('#identifiant', USERNAME);
+      await popup.fill('#mdp', PASSWORD);
+      await popup.click('button.btn.btn-primary-color[type="submit"]');
+    }
+
+    await popup.waitForEvent('close', { timeout: 20000 }).catch(() => {
+      console.log("La popup ne s'est pas fermée automatiquement (pas forcément grave).");
+    });
+
+    console.log('Retour sur la page principale, URL :', page.url());
+
+    fs.mkdirSync('debug', { recursive: true });
+    await page.screenshot({ path: 'debug/after-sso-popup.png', fullPage: true }).catch(() => {});
+    fs.writeFileSync('debug/after-sso-popup.html', await page.content().catch(() => ''));
+
+    // On revient explicitement sur l'URL du calendrier.
+    await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
+  }
+
   // Au cas (rare, défensif) où un écran de sélection de session apparaîtrait quand même.
   const sessionModalVisible = await page
     .getByText('Sélectionner une session', { exact: false })
