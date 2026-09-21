@@ -32,6 +32,7 @@ jobs:
           CNAM_USERNAME: ${{ secrets.CNAM_USERNAME }}
           CNAM_PASSWORD: ${{ secrets.CNAM_PASSWORD }}
           CALENDAR_URL: ${{ secrets.CALENDAR_URL }}
+          DEFAULT_DURATION_HOURS: '4'
         run: node scrape.js
 
       - name: Upload debug screenshot (if failure)
