@@ -92,9 +92,6 @@ function buildStableUid(ev) {
   return crypto.createHash('md5').update(raw).digest('hex') + '@cnam-calendar-sync';
 }
 
-// Attend le premier des états possibles après navigation vers le calendrier :
-// le calendrier directement (session déjà valide), ou la page intermédiaire de
-// choix de méthode de connexion (CNAM SSO vs identifiants classiques).
 async function waitForAnyState(page, timeout) {
   const attempts = [
     page.waitForSelector('td.fc-daygrid-day', { timeout }).then(() => 'calendar'),
@@ -147,7 +144,6 @@ async function waitForAnyState(page, timeout) {
   ]);
   console.log('Connecté sur lecnam.net, URL :', page.url());
 
-  // Capture systématique pour diagnostic (pas seulement en cas d'erreur).
   fs.mkdirSync('debug', { recursive: true });
   await page.screenshot({ path: 'debug/after-login.png', fullPage: true }).catch(() => {});
   fs.writeFileSync('debug/after-login.html', await page.content().catch(() => ''));
@@ -156,14 +152,11 @@ async function waitForAnyState(page, timeout) {
   await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
   console.log('URL après navigation vers le calendrier :', page.url());
 
-  // Si on retombe sur l'écran de choix (le PEC ne sait pas encore qu'on est
-  // déjà connecté sur lecnam.net), on déclenche le SSO depuis le PEC lui-même.
-  // Comme une session lecnam.net valide existe déjà, ça devrait passer sans
-  // redemander les identifiants (vrai SSO, popup qui se referme toute seule).
   const choiceVisible = await page
     .getByText('SE CONNECTER AVEC CNAM', { exact: false })
     .first()
-    .isVisible()
+    .waitFor({ timeout: 15000 })
+    .then(() => true)
     .catch(() => false);
 
   if (choiceVisible) {
@@ -174,8 +167,6 @@ async function waitForAnyState(page, timeout) {
     await popup.waitForLoadState('domcontentloaded').catch(() => {});
     console.log('Popup ouverte, URL :', popup.url());
 
-    // Si la session lecnam.net est bien reconnue, la popup se referme d'elle-même
-    // sans repasser par le formulaire. Sinon (rare), on remplit par sécurité.
     const needsCredentials = await popup
       .waitForSelector('#identifiant', { timeout: 8000 })
       .then(() => true)
@@ -198,21 +189,23 @@ async function waitForAnyState(page, timeout) {
     await page.screenshot({ path: 'debug/after-sso-popup.png', fullPage: true }).catch(() => {});
     fs.writeFileSync('debug/after-sso-popup.html', await page.content().catch(() => ''));
 
-    // On revient explicitement sur l'URL du calendrier.
     await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
   }
 
-  // Au cas (rare, défensif) où un écran de sélection de session apparaîtrait quand même.
   const sessionModalVisible = await page
     .getByText('Sélectionner une session', { exact: false })
     .first()
-    .isVisible()
+    .waitFor({ timeout: 8000 })
+    .then(() => true)
     .catch(() => false);
 
   if (sessionModalVisible) {
     console.log('Écran de sélection de session détecté...');
     const programLocator = page.getByText(SESSION_PROGRAM, { exact: false }).first();
-    const alreadyVisible = await programLocator.isVisible().catch(() => false);
+    const alreadyVisible = await programLocator
+      .waitFor({ timeout: 3000 })
+      .then(() => true)
+      .catch(() => false);
 
     if (!alreadyVisible) {
       console.log("Programme non visible directement, dépliage de l'arborescence...");
@@ -228,8 +221,6 @@ async function waitForAnyState(page, timeout) {
     await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
   }
 
-  // On attend que le calendrier soit bien chargé (peut nécessiter une redirection
-  // supplémentaire vers la page calendrier après connexion).
   try {
     await page.waitForSelector('td.fc-daygrid-day', { timeout: 20000 });
   } catch {
@@ -271,7 +262,6 @@ async function waitForAnyState(page, timeout) {
 
   const cal = ical({ name: 'Emploi du temps Cnam' });
 
-  // Déduplique (le même événement peut apparaître si un mois est vu deux fois)
   const seen = new Set();
 
   for (const ev of allEvents) {
@@ -282,37 +272,4 @@ async function waitForAnyState(page, timeout) {
 
     const hourDecimal = parseHourLabel(ev.time);
 
-    if (hourDecimal === null) {
-      // Événement sans heure précise (ex: "Indisponible", "Entreprise") -> journée entière
-      cal.createEvent({
-        id: uid,
-        start: ev.date,
-        allDay: true,
-        summary: ev.title,
-        description: ev.teacher || undefined,
-      });
-    } else {
-      const [year, month, day] = ev.date.split('-').map((n) => parseInt(n, 10));
-      const startHour = Math.floor(hourDecimal);
-      const startMinute = Math.round((hourDecimal - startHour) * 60);
-      const start = new Date(year, month - 1, day, startHour, startMinute);
-      const end = new Date(start.getTime() + DEFAULT_DURATION_HOURS * 60 * 60 * 1000);
-
-      cal.createEvent({
-        id: uid,
-        start,
-        end,
-        summary: ev.title,
-        description: ev.teacher || undefined,
-      });
-    }
-  }
-
-  fs.mkdirSync('docs', { recursive: true });
-  fs.writeFileSync('docs/calendar.ics', cal.toString());
-
-  console.log(`Fichier docs/calendar.ics généré avec ${seen.size} événements uniques.`);
-})().catch((err) => {
-  console.error('Erreur pendant le scraping :', err);
-  process.exit(1);
-});
+    if (hourDecimal ===
