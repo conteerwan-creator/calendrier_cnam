@@ -272,9 +272,19 @@ async function waitForAnyState(page, timeout) {
 
   await browser.close();
 
-  console.log(`${allEvents.length} événements bruts extraits. Génération du fichier .ics...`);
+  console.log(`${allEvents.length} événements bruts extraits. Génération des fichiers .ics...`);
 
-  const cal = ical({ name: 'Emploi du temps Cnam' });
+  const calCours = ical({ name: 'Cnam - Cours' });
+  const calAutre = ical({ name: 'Cnam - Entreprise / Indisponible' });
+
+  // Retire les préfixes du type "[ECU-5.20-2-1] " au début des titres.
+  const stripCourseCode = (title) => title.replace(/^\[[^\]]+\]\s*/, '').trim();
+
+  // Catégories qui ne sont pas des cours à proprement parler (journée entière,
+  // pas de code UE) : on les sépare dans un second agenda pour permettre une
+  // couleur différente une fois abonné (Google Calendar ne colore pas les
+  // événements individuellement dans un flux .ics, seulement l'agenda entier).
+  const NON_COURSE_TITLES = new Set(['Entreprise', 'Indisponible']);
 
   // Déduplique (le même événement peut apparaître si un mois est vu deux fois)
   const seen = new Set();
@@ -285,15 +295,19 @@ async function waitForAnyState(page, timeout) {
     if (seen.has(uid)) continue;
     seen.add(uid);
 
+    const isNonCourse = NON_COURSE_TITLES.has(ev.title.trim());
+    const targetCal = isNonCourse ? calAutre : calCours;
+    const cleanTitle = isNonCourse ? ev.title : stripCourseCode(ev.title);
+
     const hourDecimal = parseHourLabel(ev.time);
 
     if (hourDecimal === null) {
       // Événement sans heure précise (ex: "Indisponible", "Entreprise") -> journée entière
-      cal.createEvent({
+      targetCal.createEvent({
         id: uid,
         start: ev.date,
         allDay: true,
-        summary: ev.title,
+        summary: cleanTitle,
         description: ev.teacher || undefined,
       });
     } else {
@@ -303,20 +317,22 @@ async function waitForAnyState(page, timeout) {
       const start = new Date(year, month - 1, day, startHour, startMinute);
       const end = new Date(start.getTime() + DEFAULT_DURATION_HOURS * 60 * 60 * 1000);
 
-      cal.createEvent({
+      targetCal.createEvent({
         id: uid,
         start,
         end,
-        summary: ev.title,
+        summary: cleanTitle,
         description: ev.teacher || undefined,
       });
     }
   }
 
   fs.mkdirSync('docs', { recursive: true });
-  fs.writeFileSync('docs/calendar.ics', cal.toString());
+  fs.writeFileSync('docs/calendar.ics', calCours.toString());
+  fs.writeFileSync('docs/calendar-entreprise.ics', calAutre.toString());
 
-  console.log(`Fichier docs/calendar.ics généré avec ${seen.size} événements uniques.`);
+  console.log(`Fichier docs/calendar.ics généré (cours) avec ${seen.size} événements uniques au total.`);
+  console.log('Fichier docs/calendar-entreprise.ics généré (Entreprise / Indisponible).');
 })().catch((err) => {
   console.error('Erreur pendant le scraping :', err);
   process.exit(1);
