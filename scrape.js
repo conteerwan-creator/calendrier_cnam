@@ -147,6 +147,11 @@ async function waitForAnyState(page, timeout) {
   ]);
   console.log('Connecté sur lecnam.net, URL :', page.url());
 
+  // Capture systématique pour diagnostic (pas seulement en cas d'erreur).
+  fs.mkdirSync('debug', { recursive: true });
+  await page.screenshot({ path: 'debug/after-login.png', fullPage: true }).catch(() => {});
+  fs.writeFileSync('debug/after-login.html', await page.content().catch(() => ''));
+
   console.log('Navigation vers le calendrier PEC...');
   await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
   console.log('URL après navigation vers le calendrier :', page.url());
