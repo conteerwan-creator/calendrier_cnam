@@ -3,7 +3,7 @@ name: Update Cnam calendar
 on:
   schedule:
     # 3 fois par jour (heures UTC) : ~7h, ~13h, ~19h heure de Paris (hiver)
-    - cron: '0 6,12,18 * * *'
+    - cron: '0 6 * * *'
   workflow_dispatch: {}
 
 permissions:
