@@ -75,6 +75,8 @@ async function goToAdjacentMonth(page, direction) {
   );
   // petite marge pour laisser le temps au rendu de se stabiliser
   await page.waitForTimeout(300);
+  const firstCellAfter = await page.$eval('td.fc-daygrid-day', (el) => el.getAttribute('data-date'));
+  console.log(`  (changement de mois : ${firstCellBefore} -> ${firstCellAfter})`);
 }
 
 function parseHourLabel(label) {
@@ -211,6 +213,7 @@ async function waitForAnyState(page, timeout) {
     await popup.waitForEvent('close', { timeout: 20000 }).catch(() => {
       console.log("La popup ne s'est pas fermée automatiquement (pas forcément grave).");
     });
+    await popup.close().catch(() => {});
 
     console.log('Retour sur la page principale, URL :', page.url());
 
@@ -222,13 +225,21 @@ async function waitForAnyState(page, timeout) {
     await page.goto(CALENDAR_URL, { waitUntil: 'domcontentloaded' });
   }
 
-  // Au cas (rare, défensif) où un écran de sélection de session apparaîtrait quand même.
+  // Capture systématique pour diagnostic, avant de vérifier l'écran de session.
+  fs.mkdirSync('debug', { recursive: true });
+  await page.screenshot({ path: 'debug/before-session-check.png', fullPage: true }).catch(() => {});
+  fs.writeFileSync('debug/before-session-check.html', await page.content().catch(() => ''));
+
+  // Au cas où un écran de sélection de session apparaîtrait (le délai est
+  // volontairement généreux, cet écran peut mettre du temps à s'afficher).
   const sessionModalVisible = await page
     .getByText('Sélectionner une session', { exact: false })
     .first()
-    .waitFor({ timeout: 8000 })
+    .waitFor({ timeout: 20000 })
     .then(() => true)
     .catch(() => false);
+
+  console.log('Écran de sélection de session détecté ?', sessionModalVisible);
 
   if (sessionModalVisible) {
     console.log('Écran de sélection de session détecté...');
@@ -283,7 +294,9 @@ async function waitForAnyState(page, timeout) {
 
   for (let m = 0; m < totalMonths; m++) {
     console.log(`Extraction du mois ${m + 1}/${totalMonths}...`);
-    allEvents.push(...(await extractMonthEvents(page)));
+    const monthEvents = await extractMonthEvents(page);
+    console.log(`  (${monthEvents.length} événements trouvés ce mois-ci)`);
+    allEvents.push(...monthEvents);
     if (m < totalMonths - 1) {
       await goToAdjacentMonth(page, 'next');
     }
